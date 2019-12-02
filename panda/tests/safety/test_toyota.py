@@ -1,7 +1,8 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 import unittest
 import numpy as np
-import libpandasafety_py
+import libpandasafety_py  # pylint: disable=import-error
+from panda import Panda
 
 MAX_RATE_UP = 10
 MAX_RATE_DOWN = 25
@@ -14,6 +15,8 @@ MAX_RT_DELTA = 375
 RT_INTERVAL = 250000
 
 MAX_TORQUE_ERROR = 350
+
+INTERCEPTOR_THRESHOLD = 475
 
 def twos_comp(val, bits):
   if val >= 0:
@@ -31,7 +34,7 @@ class TestToyotaSafety(unittest.TestCase):
   @classmethod
   def setUp(cls):
     cls.safety = libpandasafety_py.libpandasafety
-    cls.safety.safety_set_mode(2, 100)
+    cls.safety.safety_set_mode(Panda.SAFETY_TOYOTA, 100)
     cls.safety.init_tests_toyota()
 
   def _send_msg(self, bus, addr, length):
@@ -81,7 +84,9 @@ class TestToyotaSafety(unittest.TestCase):
     to_send = libpandasafety_py.ffi.new('CAN_FIFOMailBox_TypeDef *')
     to_send[0].RIR = addr << 21
     to_send[0].RDTR = 6
-    to_send[0].RDLR = ((gas & 0xff) << 8) | ((gas & 0xff00) >> 8)
+    gas2 = gas * 2
+    to_send[0].RDLR = ((gas & 0xff) << 8) | ((gas & 0xff00) >> 8) | \
+                      ((gas2 & 0xff) << 24) | ((gas2 & 0xff00) << 8)
 
     return to_send
 
@@ -145,16 +150,15 @@ class TestToyotaSafety(unittest.TestCase):
 
   def test_disengage_on_gas_interceptor(self):
     for long_controls_allowed in [0, 1]:
-      self.safety.set_long_controls_allowed(long_controls_allowed)
-      self.safety.safety_rx_hook(self._send_interceptor_msg(0, 0x201))
-      self.safety.set_controls_allowed(True)
-      self.safety.safety_rx_hook(self._send_interceptor_msg(0x1000, 0x201))
-      if long_controls_allowed:
-        self.assertFalse(self.safety.get_controls_allowed())
-      else:
-        self.assertTrue(self.safety.get_controls_allowed())
-      self.safety.safety_rx_hook(self._send_interceptor_msg(0, 0x201))
-      self.safety.set_gas_interceptor_detected(False)
+      for g in range(0, 0x1000):
+        self.safety.set_long_controls_allowed(long_controls_allowed)
+        self.safety.safety_rx_hook(self._send_interceptor_msg(0, 0x201))
+        self.safety.set_controls_allowed(True)
+        self.safety.safety_rx_hook(self._send_interceptor_msg(g, 0x201))
+        remain_enabled = (not long_controls_allowed or g <= INTERCEPTOR_THRESHOLD)
+        self.assertEqual(remain_enabled, self.safety.get_controls_allowed())
+        self.safety.safety_rx_hook(self._send_interceptor_msg(0, 0x201))
+        self.safety.set_gas_interceptor_detected(False)
     self.safety.set_long_controls_allowed(True)
 
   def test_allow_engage_with_gas_interceptor_pressed(self):
@@ -278,8 +282,8 @@ class TestToyotaSafety(unittest.TestCase):
 
   def test_fwd_hook(self):
 
-    buss = range(0x0, 0x3)
-    msgs = range(0x1, 0x800)
+    buss = list(range(0x0, 0x3))
+    msgs = list(range(0x1, 0x800))
     long_controls_allowed = [0, 1]
     toyota_camera_forwarded = [0, 1]
 

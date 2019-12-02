@@ -4,12 +4,12 @@ import numpy as np
 from cereal import log
 from common.realtime import DT_CTRL
 from common.numpy_fast import clip
-from selfdrive.car.toyota.carcontroller import SteerLimitParams
+from selfdrive.car.toyota.values import SteerLimitParams
 from selfdrive.car import apply_toyota_steer_torque_limits
 from selfdrive.controls.lib.drive_helpers import get_steer_max
 
 
-class LatControlINDI(object):
+class LatControlINDI():
   def __init__(self, CP):
     self.angle_steers_des = 0.
 
@@ -32,7 +32,7 @@ class LatControlINDI(object):
     self.A_K = A - np.dot(K, C)
     self.x = np.matrix([[0.], [0.], [0.]])
 
-    self.enfore_rate_limit = CP.carName == "toyota"
+    self.enforce_rate_limit = CP.carName == "toyota"
 
     self.RC = CP.lateralTuning.indi.timeConstant
     self.G = CP.lateralTuning.indi.actuatorEffectiveness
@@ -47,7 +47,7 @@ class LatControlINDI(object):
     self.output_steer = 0.
     self.counter = 0
 
-  def update(self, active, v_ego, angle_steers, angle_steers_rate, steer_override, CP, VM, path_plan):
+  def update(self, active, v_ego, angle_steers, angle_steers_rate, eps_torque, steer_override, CP, path_plan):
     # Update Kalman filter
     y = np.matrix([[math.radians(angle_steers)], [math.radians(angle_steers_rate)]])
     self.x = np.dot(self.A_K, self.x) + np.dot(self.K, y)
@@ -81,7 +81,7 @@ class LatControlINDI(object):
       delta_u = g_inv * accel_error
 
       # Enforce rate limit
-      if self.enfore_rate_limit:
+      if self.enforce_rate_limit:
         steer_max = float(SteerLimitParams.STEER_MAX)
         new_output_steer_cmd = steer_max * (self.delayed_output + delta_u)
         prev_output_steer_cmd = steer_max * self.output_steer

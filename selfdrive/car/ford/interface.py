@@ -1,16 +1,16 @@
-#!/usr/bin/env python
-from common.realtime import sec_since_boot
+#!/usr/bin/env python3
 from cereal import car
 from selfdrive.swaglog import cloudlog
 from selfdrive.config import Conversions as CV
 from selfdrive.controls.lib.drive_helpers import EventTypes as ET, create_event
 from selfdrive.controls.lib.vehicle_model import VehicleModel
 from selfdrive.car.ford.carstate import CarState, get_can_parser
-from selfdrive.car.ford.values import MAX_ANGLE
-from selfdrive.car import STD_CARGO_KG, scale_rot_inertia, scale_tire_stiffness
+from selfdrive.car.ford.values import MAX_ANGLE, ECU, ECU_FINGERPRINT, FINGERPRINTS
+from selfdrive.car import STD_CARGO_KG, scale_rot_inertia, scale_tire_stiffness, is_ecu_disconnected, gen_empty_fingerprint
+from selfdrive.car.interfaces import CarInterfaceBase
 
 
-class CarInterface(object):
+class CarInterface(CarInterfaceBase):
   def __init__(self, CP, CarController):
     self.CP = CP
     self.VM = VehicleModel(CP)
@@ -34,19 +34,17 @@ class CarInterface(object):
     return float(accel) / 3.0
 
   @staticmethod
-  def calc_accel_override(a_ego, a_target, v_ego, v_target):
-    return 1.0
-
-  @staticmethod
-  def get_params(candidate, fingerprint, vin=""):
+  def get_params(candidate, fingerprint=gen_empty_fingerprint(), vin="", has_relay=False):
 
     ret = car.CarParams.new_message()
 
     ret.carName = "ford"
     ret.carFingerprint = candidate
     ret.carVin = vin
+    ret.isPandaBlack = has_relay
 
     ret.safetyModel = car.CarParams.SafetyModel.ford
+    ret.dashcamOnly = True
 
     # pedal
     ret.enableCruise = True
@@ -87,9 +85,9 @@ class CarInterface(object):
     ret.brakeMaxBP = [5., 20.]
     ret.brakeMaxV = [1., 0.8]
 
-    ret.enableCamera = not any(x for x in [970, 973, 984] if x in fingerprint)
+    ret.enableCamera = is_ecu_disconnected(fingerprint[0], FINGERPRINTS, ECU_FINGERPRINT, candidate, ECU.CAM) or has_relay
     ret.openpilotLongitudinalControl = False
-    cloudlog.warn("ECU Camera Simulated: %r", ret.enableCamera)
+    cloudlog.warning("ECU Camera Simulated: %r", ret.enableCamera)
 
     ret.steerLimitAlert = False
     ret.stoppingControl = False
@@ -105,18 +103,16 @@ class CarInterface(object):
     return ret
 
   # returns a car.CarState
-  def update(self, c):
+  def update(self, c, can_strings):
     # ******************* do can recv *******************
-    canMonoTimes = []
-
-    can_rcv_valid, _ = self.cp.update(int(sec_since_boot() * 1e9), True)
+    self.cp.update_strings(can_strings)
 
     self.CS.update(self.cp)
 
     # create message
     ret = car.CarState.new_message()
 
-    ret.canValid = can_rcv_valid and self.cp.can_valid
+    ret.canValid = self.cp.can_valid
 
     # speeds
     ret.vEgo = self.CS.v_ego
@@ -167,7 +163,6 @@ class CarInterface(object):
       events.append(create_event('steerTempUnavailableMute', [ET.WARNING]))
 
     ret.events = events
-    ret.canMonoTimes = canMonoTimes
 
     self.gas_pressed_prev = ret.gasPressed
     self.brake_pressed_prev = ret.brakePressed

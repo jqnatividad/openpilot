@@ -30,6 +30,8 @@ typedef struct
   uint32_t CNT;
 } TIM_TypeDef;
 
+bool board_has_relay(void);
+
 void set_controls_allowed(bool c);
 bool get_controls_allowed(void);
 void set_long_controls_allowed(bool c);
@@ -37,6 +39,7 @@ bool get_long_controls_allowed(void);
 void set_gas_interceptor_detected(bool c);
 bool get_gas_interceptor_detetcted(void);
 int get_gas_interceptor_prev(void);
+int get_hw_type(void);
 void set_timer(uint32_t t);
 void reset_angle_control(void);
 
@@ -55,11 +58,13 @@ void set_toyota_camera_forwarded(int t);
 void set_toyota_rt_torque_last(int t);
 
 void init_tests_honda(void);
-int get_honda_ego_speed(void);
-int get_honda_brake_prev(void);
+bool get_honda_moving(void);
+bool get_honda_brake_pressed_prev(void);
 int get_honda_gas_prev(void);
+void set_honda_fwd_brake(bool);
 void set_honda_alt_brake_msg(bool);
 void set_honda_bosch_hardware(bool);
+int get_honda_bosch_hardware(void);
 
 void init_tests_cadillac(void);
 void set_cadillac_desired_torque_last(int t);
@@ -91,6 +96,11 @@ void set_subaru_desired_torque_last(int t);
 void set_subaru_rt_torque_last(int t);
 void set_subaru_torque_driver(int min, int max);
 
+void init_tests_volkswagen(void);
+void set_volkswagen_desired_torque_last(int t);
+void set_volkswagen_rt_torque_last(int t);
+void set_volkswagen_torque_driver(int min, int max);
+int get_volkswagen_gas_prev(void);
 
 """)
 

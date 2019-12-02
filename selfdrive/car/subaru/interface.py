@@ -1,15 +1,16 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 from cereal import car
-from common.realtime import sec_since_boot
 from selfdrive.config import Conversions as CV
 from selfdrive.controls.lib.drive_helpers import create_event, EventTypes as ET
 from selfdrive.controls.lib.vehicle_model import VehicleModel
 from selfdrive.car.subaru.values import CAR
 from selfdrive.car.subaru.carstate import CarState, get_powertrain_can_parser, get_camera_can_parser
-from selfdrive.car import STD_CARGO_KG, scale_rot_inertia, scale_tire_stiffness
+from selfdrive.car import STD_CARGO_KG, scale_rot_inertia, scale_tire_stiffness, gen_empty_fingerprint
+from selfdrive.car.interfaces import CarInterfaceBase
 
+ButtonType = car.CarState.ButtonEvent.Type
 
-class CarInterface(object):
+class CarInterface(CarInterfaceBase):
   def __init__(self, CP, CarController):
     self.CP = CP
 
@@ -34,21 +35,21 @@ class CarInterface(object):
     return float(accel) / 4.0
 
   @staticmethod
-  def calc_accel_override(a_ego, a_target, v_ego, v_target):
-    return 1.0
-
-  @staticmethod
-  def get_params(candidate, fingerprint, vin=""):
+  def get_params(candidate, fingerprint=gen_empty_fingerprint(), vin="", has_relay=False):
     ret = car.CarParams.new_message()
 
     ret.carName = "subaru"
+    ret.radarOffCan = True
     ret.carFingerprint = candidate
     ret.carVin = vin
+    ret.isPandaBlack = has_relay
     ret.safetyModel = car.CarParams.SafetyModel.subaru
 
     ret.enableCruise = True
     ret.steerLimitAlert = True
 
+    # force openpilot to fake the stock camera, since car harness is not supported yet and old style giraffe (with switches)
+    # was never released
     ret.enableCamera = True
 
     ret.steerRateCost = 0.7
@@ -94,16 +95,16 @@ class CarInterface(object):
     return ret
 
   # returns a car.CarState
-  def update(self, c):
-    can_rcv_valid, _ = self.pt_cp.update(int(sec_since_boot() * 1e9), True)
-    cam_rcv_valid, _ = self.cam_cp.update(int(sec_since_boot() * 1e9), False)
+  def update(self, c, can_strings):
+    self.pt_cp.update_strings(can_strings)
+    self.cam_cp.update_strings(can_strings)
 
     self.CS.update(self.pt_cp, self.cam_cp)
 
     # create message
     ret = car.CarState.new_message()
 
-    ret.canValid = can_rcv_valid and cam_rcv_valid and self.pt_cp.can_valid and self.cam_cp.can_valid
+    ret.canValid = self.pt_cp.can_valid and self.cam_cp.can_valid
 
     # speeds
     ret.vEgo = self.CS.v_ego
@@ -143,18 +144,18 @@ class CarInterface(object):
     # blinkers
     if self.CS.left_blinker_on != self.CS.prev_left_blinker_on:
       be = car.CarState.ButtonEvent.new_message()
-      be.type = 'leftBlinker'
+      be.type = ButtonType.leftBlinker
       be.pressed = self.CS.left_blinker_on
       buttonEvents.append(be)
 
     if self.CS.right_blinker_on != self.CS.prev_right_blinker_on:
       be = car.CarState.ButtonEvent.new_message()
-      be.type = 'rightBlinker'
+      be.type = ButtonType.rightBlinker
       be.pressed = self.CS.right_blinker_on
       buttonEvents.append(be)
 
     be = car.CarState.ButtonEvent.new_message()
-    be.type = 'accelCruise'
+    be.type = ButtonType.accelCruise
     buttonEvents.append(be)
 
 

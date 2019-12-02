@@ -15,6 +15,9 @@ WARN_FLAGS = -Werror=implicit-function-declaration \
 CFLAGS = -I. -std=gnu11 -fPIC -O2 $(WARN_FLAGS)
 CXXFLAGS = -I. -std=c++14 -fPIC -O2 $(WARN_FLAGS)
 
+MESSAGING_FLAGS = -I$(BASEDIR)/selfdrive/messaging
+MESSAGING_LIBS = $(BASEDIR)/selfdrive/messaging/messaging.a
+
 ifeq ($(ARCH),aarch64)
 CFLAGS += -mcpu=cortex-a57
 CXXFLAGS += -mcpu=cortex-a57
@@ -46,15 +49,14 @@ else
   LIBYUV_FLAGS = -I$(PHONELIBS)/libyuv/include
   LIBYUV_LIBS = $(PHONELIBS)/libyuv/x64/lib/libyuv.a
 
-  ZMQ_FLAGS = -I$(PHONELIBS)/zmq/aarch64/include
-  ZMQ_LIBS = -l:libczmq.a -l:libzmq.a -lsodium
+  ZMQ_FLAGS = -I$(PHONELIBS)/zmq/x64/include
+  ZMQ_LIBS = -L$(PHONELIBS)/zmq/x64/lib/ -l:libczmq.a -l:libzmq.a
 
   OPENCL_LIBS = -lOpenCL
-  UUID_LIBS = -luuid
 
-  TF_FLAGS = -I$(EXTERNAL)/tensorflow/include
-  TF_LIBS = -L$(EXTERNAL)/tensorflow/lib -ltensorflow \
-            -Wl,-rpath $(EXTERNAL)/tensorflow/lib
+  #TF_FLAGS = -I$(EXTERNAL)/tensorflow/include
+  #TF_LIBS = -L$(EXTERNAL)/tensorflow/lib -ltensorflow \
+  #          -Wl,-rpath $(EXTERNAL)/tensorflow/lib
 
   SNPE_FLAGS = -I$(PHONELIBS)/snpe/include/
   SNPE_LIBS = -L$(PHONELIBS)/snpe/x86_64-linux-clang/ \
@@ -67,7 +69,7 @@ else
   PLATFORM_OBJS = cameras/camera_frame_stream.o \
                   ../common/visionbuf_cl.o \
                   ../common/visionimg.o \
-                  runners/tfmodel.o
+                  # runners/tfmodel.o
 endif
 
   SSL_FLAGS = -I/usr/include/openssl/
@@ -162,7 +164,7 @@ rgb_to_yuv_test: transforms/rgb_to_yuv_test.o clutil.o transforms/rgb_to_yuv.o .
         $(OPENCL_LIBS) \
 
 
-$(OUTPUT): $(OBJS)
+$(OUTPUT): $(OBJS) $(MESSAGING_LIBS)
 	@echo "[ LINK ] $@"
 	$(CXX) -fPIC -o '$@' $^ \
         $(LDFLAGS) \
@@ -191,6 +193,7 @@ $(MODEL_OBJS): %.o: %.dlc
            -Iinclude -I.. -I../.. \
            $(EIGEN_FLAGS) \
            $(ZMQ_FLAGS) \
+           $(MESSAGING_FLAGS) \
            $(CEREAL_CXXFLAGS) \
            $(OPENCL_FLAGS) \
            $(LIBYUV_FLAGS) \
@@ -207,6 +210,7 @@ $(MODEL_OBJS): %.o: %.dlc
 	$(CC) $(CFLAGS) -MMD \
           -Iinclude -I.. -I../.. \
           $(ZMQ_FLAGS) \
+          $(MESSAGING_FLAGS) \
           $(CEREAL_CFLAGS) \
           $(OPENCL_FLAGS) \
           $(LIBYUV_FLAGS) \

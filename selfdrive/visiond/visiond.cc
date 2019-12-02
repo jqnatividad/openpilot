@@ -26,6 +26,12 @@
 #include <capnp/serialize.h>
 #include <jpeglib.h>
 
+#ifdef QCOM
+#include <eigen3/Eigen/Dense>
+#else
+#include <Eigen/Dense>
+#endif
+
 #include "common/version.h"
 #include "common/util.h"
 #include "common/timing.h"
@@ -45,6 +51,9 @@
 #include "cameras/camera_frame_stream.h"
 #endif
 
+#include "messaging.hpp"
+
+
 // 3 models
 #include "models/driving.h"
 #include "models/monitoring.h"
@@ -58,7 +67,7 @@
 
 #define UI_BUF_COUNT 4
 
-//#define DUMP_RGB
+// #define DUMP_RGB
 
 //#define DEBUG_DRIVER_MONITOR
 
@@ -73,7 +82,7 @@ typedef void (*sighandler_t) (int);
 #endif
 
 extern "C" {
-volatile int do_exit = 0;
+volatile sig_atomic_t do_exit = 0;
 }
 
 namespace {
@@ -148,13 +157,14 @@ struct VisionState {
   int rgb_front_width, rgb_front_height, rgb_front_stride;
   VisionBuf rgb_front_bufs[UI_BUF_COUNT];
   cl_mem rgb_front_bufs_cl[UI_BUF_COUNT];
+  int front_meteringbox_xmin, front_meteringbox_xmax;
+  int front_meteringbox_ymin, front_meteringbox_ymax;
 
   ModelState model;
   ModelData model_bufs[UI_BUF_COUNT];
 
   MonitoringState monitoring;
-  zsock_t *monitoring_sock;
-  void* monitoring_sock_raw;
+  PubSocket *monitoring_sock;
 
   PosenetState posenet;
 
@@ -174,14 +184,11 @@ struct VisionState {
   DualCameraState cameras;
 
   zsock_t *terminate_pub;
-  zsock_t *recorder_sock;
-  void* recorder_sock_raw;
 
-  zsock_t *posenet_sock;
-  void* posenet_sock_raw;
-
-  zsock_t *thumbnail_sock;
-  void* thumbnail_sock_raw;
+  Context * msg_context;
+  PubSocket *recorder_sock;
+  PubSocket *posenet_sock;
+  PubSocket *thumbnail_sock;
 
   pthread_mutex_t clients_lock;
   VisionClientState clients[MAX_CLIENTS];
@@ -716,27 +723,29 @@ void* monitoring_thread(void *arg) {
       MonitoringResult res = monitoring_eval_frame(&s->monitoring, q,
         s->yuv_front_cl[buf_idx], s->yuv_front_width, s->yuv_front_height);
 
-      // send driver monitoring packet
-      {
-        capnp::MallocMessageBuilder msg;
-        cereal::Event::Builder event = msg.initRoot<cereal::Event>();
-        event.setLogMonoTime(nanos_since_boot());
-
-        auto framed = event.initDriverMonitoring();
-        framed.setFrameId(frame_data.frame_id);
-
-        kj::ArrayPtr<const float> descriptor_vs(&res.vs[0], ARRAYSIZE(res.vs));
-        framed.setDescriptor(descriptor_vs);
-
-        framed.setStd(res.std);
-
-        auto words = capnp::messageToFlatArray(msg);
-        auto bytes = words.asBytes();
-        zmq_send(s->monitoring_sock_raw, bytes.begin(), bytes.size(), ZMQ_DONTWAIT);
-      }
-
       double t2 = millis_since_boot();
 
+      // set front camera metering target
+      if (res.face_prob > 0.4)
+      {
+        int x_offset = s->rgb_front_width - 0.5 * s->rgb_front_height;
+        s->front_meteringbox_xmin = x_offset + (res.face_position[0] + 0.5) * (0.5 * s->rgb_front_height) - 72;
+        s->front_meteringbox_xmax = x_offset + (res.face_position[0] + 0.5) * (0.5 * s->rgb_front_height) + 72;
+        s->front_meteringbox_ymin = (res.face_position[1] + 0.5) * (s->rgb_front_height) - 72;
+        s->front_meteringbox_ymax = (res.face_position[1] + 0.5) * (s->rgb_front_height) + 72;
+      }
+      else // use default setting if no face
+      {
+        s->front_meteringbox_ymin = s->rgb_front_height * 1 / 3;
+        s->front_meteringbox_ymax = s->rgb_front_height * 1;
+        s->front_meteringbox_xmin = s->rgb_front_width * 3 / 5;
+        s->front_meteringbox_xmax = s->rgb_front_width;
+      }
+
+      // send dm packet
+      monitoring_publish(s->monitoring_sock, frame_data.frame_id, res, ir_target_set(&s->cameras.front.cur_gain_frac, res));
+
+      //t2 = millis_since_boot();
       //LOGD("monitoring process: %.2fms, from last %.2fms", t2-t1, t1-last);
       last = t1;
     }
@@ -794,11 +803,26 @@ void* frontview_thread(void *arg) {
     if (cnt % 3 == 0)
 #endif
     {
-      // for driver autoexposure, use bottom right corner
-      const int y_start = s->rgb_front_height / 3;
-      const int y_end = s->rgb_front_height;
-      const int x_start = s->rgb_front_width * 2 / 3;
-      const int x_end = s->rgb_front_width;
+      // use driver face crop for AE
+      int x_start;
+      int x_end;
+      int y_start;
+      int y_end;
+
+      if (s->front_meteringbox_xmax > 0)
+      {
+        x_start = s->front_meteringbox_xmin<0 ? 0:s->front_meteringbox_xmin;
+        x_end = s->front_meteringbox_xmax>=s->rgb_front_width ? s->rgb_front_width-1:s->front_meteringbox_xmax;
+        y_start = s->front_meteringbox_ymin<0 ? 0:s->front_meteringbox_ymin;
+        y_end = s->front_meteringbox_ymax>=s->rgb_front_height ? s->rgb_front_height-1:s->front_meteringbox_ymax;
+      }
+      else
+      {
+        y_start = s->rgb_front_height * 1 / 3;
+        y_end = s->rgb_front_height * 1;
+        x_start = s->rgb_front_width * 3 / 5;
+        x_end = s->rgb_front_width;
+      }
 
       uint32_t lum_binning[256] = {0,};
       for (int y = y_start; y < y_end; ++y) {
@@ -869,9 +893,8 @@ void* processing_thread(void *arg) {
   cl_command_queue q = clCreateCommandQueueWithProperties(s->context, s->device_id, props, &err);
   assert(err == 0);
 
-  zsock_t *model_sock = zsock_new_pub("@tcp://*:8009");
-  assert(model_sock);
-  void *model_sock_raw = zsock_resolve(model_sock);
+  Context * context = Context::create();
+  PubSocket * model_sock = PubSocket::create(context, "model");
 
 #ifdef SEND_NET_INPUT
   zsock_t *img_sock = zsock_new_pub("@tcp://*:9000");
@@ -882,6 +905,8 @@ void* processing_thread(void *arg) {
 #endif
 
 #ifdef DUMP_RGB
+  s->rgb_width = s->frame_width;
+  s->rgb_height = s->frame_height;
   FILE *dump_rgb_file = fopen("/sdcard/dump.rgb", "wb");
 #endif
 
@@ -946,6 +971,8 @@ void* processing_thread(void *arg) {
 #ifdef DUMP_RGB
     if (cnt % 20 == 0) {
       fwrite(bgr_ptr, s->rgb_buf_size, 1, dump_rgb_file);
+      LOG("%d x %d", s->rgb_width, s->rgb_height);
+      assert(1==2);
     }
 #endif
 
@@ -981,10 +1008,10 @@ void* processing_thread(void *arg) {
       mt1 = millis_since_boot();
       s->model_bufs[ui_idx] =
           model_eval_frame(&s->model, q, yuv_cl, s->yuv_width, s->yuv_height,
-                           model_transform, img_sock_raw);
+                           model_transform, img_sock_raw, NULL);
       mt2 = millis_since_boot();
 
-      model_publish(model_sock_raw, frame_id, model_transform, s->model_bufs[ui_idx]);
+      model_publish(model_sock, frame_id, s->model_bufs[ui_idx], frame_data.timestamp_eof);
     }
 
 
@@ -1014,10 +1041,10 @@ void* processing_thread(void *arg) {
       kj::ArrayPtr<const float> transform_vs(&s->yuv_transform.v[0], 9);
       framed.setTransform(transform_vs);
 
-      if (s->recorder_sock_raw != NULL) {
+      if (s->recorder_sock != NULL) {
         auto words = capnp::messageToFlatArray(msg);
         auto bytes = words.asBytes();
-        zmq_send(s->recorder_sock_raw, bytes.begin(), bytes.size(), ZMQ_DONTWAIT);
+        s->recorder_sock->send((char*)bytes.begin(), bytes.size());
       }
     }
 
@@ -1047,10 +1074,12 @@ void* processing_thread(void *arg) {
         posenetd.setTransStd(trans_std_vs);
         kj::ArrayPtr<const float> rot_std_vs(&s->posenet.output[9], 3);
         posenetd.setRotStd(rot_std_vs);
+        posenetd.setTimestampEof(frame_data.timestamp_eof);
+        posenetd.setFrameId(frame_id);
 
         auto words = capnp::messageToFlatArray(msg);
         auto bytes = words.asBytes();
-        zmq_send(s->posenet_sock_raw, bytes.begin(), bytes.size(), ZMQ_DONTWAIT);
+        s->posenet_sock->send((char*)bytes.begin(), bytes.size());
       }
       pt3 = millis_since_boot();
       LOGD("pre: %.2fms | posenet: %.2fms", (pt2-pt1), (pt3-pt1));
@@ -1112,7 +1141,7 @@ void* processing_thread(void *arg) {
 
       auto words = capnp::messageToFlatArray(msg);
       auto bytes = words.asBytes();
-      zmq_send(s->thumbnail_sock_raw, bytes.begin(), bytes.size(), ZMQ_DONTWAIT);
+      s->thumbnail_sock->send((char*)bytes.begin(), bytes.size());
 
       free(thumbnail_buffer);
     }
@@ -1169,7 +1198,8 @@ void* processing_thread(void *arg) {
   fclose(dump_rgb_file);
 #endif
 
-  zsock_destroy(&model_sock);
+  delete model_sock;
+  delete context;
 
   return NULL;
 }
@@ -1180,59 +1210,68 @@ void* live_thread(void *arg) {
 
   set_thread_name("live");
 
-  zsock_t *terminate = zsock_new_sub(">inproc://terminate", "");
-  assert(terminate);
+  Context * c = Context::create();
+  SubSocket * live_calibration_sock = SubSocket::create(c, "liveCalibration");
+  Poller * poller = Poller::create({live_calibration_sock});
 
-  zsock_t *liveCalibration_sock = zsock_new_sub(">tcp://127.0.0.1:8019", "");
-  assert(liveCalibration_sock);
+  /*
+     import numpy as np
+     from common.transformations.model import medmodel_frame_from_road_frame
+     medmodel_frame_from_ground = medmodel_frame_from_road_frame[:, (0, 1, 3)]
+     ground_from_medmodel_frame = np.linalg.inv(medmodel_frame_from_ground)
+  */
+  Eigen::Matrix<float, 3, 3> ground_from_medmodel_frame;
+  ground_from_medmodel_frame <<
+    0.00000000e+00, 0.00000000e+00, 1.00000000e+00,
+    -1.09890110e-03, 0.00000000e+00, 2.81318681e-01,
+    -1.84808520e-20, 9.00738606e-04,-4.28751576e-02;
 
-  zpoller_t *poller = zpoller_new(liveCalibration_sock, terminate, NULL);
-  assert(poller);
+  Eigen::Matrix<float, 3, 3> eon_intrinsics;
+  eon_intrinsics <<
+    910.0, 0.0, 582.0,
+    0.0, 910.0, 437.0,
+    0.0,   0.0,   1.0;
 
   while (!do_exit) {
-    zsock_t *which = (zsock_t*)zpoller_wait(poller, -1);
-    if (which == terminate || which == NULL) {
-      break;
-    }
+    for (auto sock : poller->poll(10)){
+      Message * msg = sock->receive();
 
-    zmq_msg_t msg;
-    err = zmq_msg_init(&msg);
-    assert(err == 0);
+      auto amsg = kj::heapArray<capnp::word>((msg->getSize() / sizeof(capnp::word)) + 1);
+      memcpy(amsg.begin(), msg->getData(), msg->getSize());
 
-    err = zmq_msg_recv(&msg, zsock_resolve(which), 0);
-    assert(err >= 0);
-    size_t len = zmq_msg_size(&msg);
+      capnp::FlatArrayMessageReader cmsg(amsg);
+      cereal::Event::Reader event = cmsg.getRoot<cereal::Event>();
 
-    // make copy due to alignment issues, will be freed on out of scope
-    auto amsg = kj::heapArray<capnp::word>((len / sizeof(capnp::word)) + 1);
-    memcpy(amsg.begin(), (const uint8_t*)zmq_msg_data(&msg), len);
+      if (event.isLiveCalibration()) {
+        pthread_mutex_lock(&s->transform_lock);
 
-    // track camera frames to sync to encoder
-    capnp::FlatArrayMessageReader cmsg(amsg);
-    cereal::Event::Reader event = cmsg.getRoot<cereal::Event>();
+        auto extrinsic_matrix = event.getLiveCalibration().getExtrinsicMatrix();
+        Eigen::Matrix<float, 3, 4> extrinsic_matrix_eigen;
+        for (int i = 0; i < 4*3; i++){
+          extrinsic_matrix_eigen(i / 4, i % 4) = extrinsic_matrix[i];
+        }
 
-    if (event.isLiveCalibration()) {
-      pthread_mutex_lock(&s->transform_lock);
-#ifdef MEDMODEL
-      auto wm2 = event.getLiveCalibration().getWarpMatrixBig();
-#else
-      auto wm2 = event.getLiveCalibration().getWarpMatrix2();
-#endif
-      assert(wm2.size() == 3*3);
-      for (int i=0; i<3*3; i++) {
-        s->cur_transform.v[i] = wm2[i];
+        auto camera_frame_from_road_frame = eon_intrinsics * extrinsic_matrix_eigen;
+        Eigen::Matrix<float, 3, 3> camera_frame_from_ground;
+        camera_frame_from_ground.col(0) = camera_frame_from_road_frame.col(0);
+        camera_frame_from_ground.col(1) = camera_frame_from_road_frame.col(1);
+        camera_frame_from_ground.col(2) = camera_frame_from_road_frame.col(3);
+
+        auto warp_matrix = camera_frame_from_ground * ground_from_medmodel_frame;
+
+        for (int i=0; i<3*3; i++) {
+          s->cur_transform.v[i] = warp_matrix(i / 3, i % 3);
+        }
+
+        s->run_model = true;
+        pthread_mutex_unlock(&s->transform_lock);
       }
-      s->run_model = true;
-      pthread_mutex_unlock(&s->transform_lock);
+
+      delete msg;
     }
 
-    zmq_msg_close(&msg);
   }
 
-  zpoller_destroy(&poller);
-  zsock_destroy(&terminate);
-
-  zsock_destroy(&liveCalibration_sock);
 
   return NULL;
 }
@@ -1241,7 +1280,7 @@ void set_do_exit(int sig) {
   do_exit = 1;
 }
 
-void party(VisionState *s, bool nomodel) {
+void party(VisionState *s) {
   int err;
 
   s->terminate_pub = zsock_new_pub("@inproc://terminate");
@@ -1330,11 +1369,6 @@ int main(int argc, char **argv) {
     test_run = true;
   }
 
-  bool no_model = false;
-  if (argc > 1 && strcmp(argv[1], "--no-model") == 0) {
-    no_model = true;
-  }
-
   VisionState state = {0};
   VisionState *s = &state;
 
@@ -1345,7 +1379,6 @@ int main(int argc, char **argv) {
   monitoring_init(&s->monitoring, s->device_id, s->context);
   posenet_init(&s->posenet);
 
-  // s->zctx = zctx_shadow_zmq_ctx(zsys_init());
 
   cameras_init(&s->cameras);
 
@@ -1360,36 +1393,30 @@ int main(int argc, char **argv) {
 
   init_buffers(s);
 
+  s->msg_context = Context::create();
+
   #ifdef QCOM
-    s->recorder_sock = zsock_new_pub("@tcp://*:8002");
-    assert(s->recorder_sock);
-    s->recorder_sock_raw = zsock_resolve(s->recorder_sock);
+    s->recorder_sock = PubSocket::create(s->msg_context, "frame");
   #endif
 
-  s->monitoring_sock = zsock_new_pub("@tcp://*:8063");
-  assert(s->monitoring_sock);
-  s->monitoring_sock_raw = zsock_resolve(s->monitoring_sock);
+  s->monitoring_sock = PubSocket::create(s->msg_context, "driverMonitoring");
+  s->posenet_sock = PubSocket::create(s->msg_context, "cameraOdometry");
+  s->thumbnail_sock = PubSocket::create(s->msg_context, "thumbnail");
 
-  s->posenet_sock = zsock_new_pub("@tcp://*:8066");
-  assert(s->posenet_sock);
-  s->posenet_sock_raw = zsock_resolve(s->posenet_sock);
-
-  s->thumbnail_sock = zsock_new_pub("@tcp://*:8069");
-  assert(s->thumbnail_sock);
-  s->thumbnail_sock_raw = zsock_resolve(s->thumbnail_sock);
 
   cameras_open(&s->cameras, &s->camera_bufs[0], &s->focus_bufs[0], &s->stats_bufs[0], &s->front_camera_bufs[0]);
 
   if (test_run) {
     do_exit = true;
   }
-  party(s, no_model);
+  party(s);
 
-  zsock_destroy(&s->recorder_sock);
-  zsock_destroy(&s->monitoring_sock);
-  zsock_destroy(&s->posenet_sock);
-  zsock_destroy(&s->thumbnail_sock);
-  // zctx_destroy(&s->zctx);
+
+  delete s->recorder_sock;
+  delete s->monitoring_sock;
+  delete s->posenet_sock;
+  delete s->thumbnail_sock;
+  delete s->msg_context;
 
   model_free(&s->model);
   monitoring_free(&s->monitoring);

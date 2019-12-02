@@ -1,3 +1,70 @@
+Version 0.6.6 (2019-11-05)
+========================
+ * Volkswagen support thanks to jyoung8607!
+ * Toyota Corolla Hybrid with TSS 2.0 support thanks to u8511049!
+ * Lexus ES with TSS 2.0 support thanks to energee!
+ * Fix GM ignition detection and lock safety mode not required anymore
+ * Log panda firmware and dongle ID thanks to martinl!
+ * New driving model: improve path prediction and lead detection
+ * New driver monitoring model, 4x smaller and running on DSP
+ * Display an alert and don't start openpilot if panda has wrong firmware
+ * Fix bug preventing EON from terminating processes after a drive
+ * Remove support for Toyota giraffe without the 120Ohm resistor
+
+Version 0.6.5 (2019-10-07)
+========================
+ * NEOS update: upgrade to Python3 and new installer!
+ * comma Harness support!
+ * New driving model: improve path prediction
+ * New driver monitoring model: more accurate face and eye detection
+ * Redesign offroad screen to display updates and alerts
+ * Increase maximum allowed acceleration
+ * Prevent car 12V battery drain by cutting off EON charge after 3 days of no drive
+ * Lexus CT Hybrid support thanks to thomaspich!
+ * Louder chime for critical alerts
+ * Add toggle to switch to dashcam mode
+ * Fix "invalid vehicle params" error on DSU-less Toyota
+
+Version 0.6.4 (2019-09-08)
+========================
+ * Forward stock AEB for Honda Nidec
+ * Improve lane centering on banked roads
+ * Always-on forward collision warning
+ * Always-on driver monitoring, except for right hand drive countries
+ * Driver monitoring learns the user's normal driving position
+ * Honda Fit support thanks to energee!
+ * Lexus IS support
+
+Version 0.6.3 (2019-08-12)
+========================
+ * Alert sounds from EON: requires NEOS update
+ * Improve driver monitoring: eye tracking and improved awareness logic
+ * Improve path prediction with new driving model
+ * Improve lane positioning with wide lanes and exits
+ * Improve lateral control on RAV4
+ * Slow down for turns using model
+ * Open sourced regression test to verify outputs against reference logs
+ * Open sourced regression test to sanity check all car models
+
+Version 0.6.2 (2019-07-29)
+========================
+ * New driving model!
+ * Improve lane tracking with double lines
+ * Strongly improve stationary vehicle detection
+ * Strongly reduce cases of braking due to false leads
+ * Better lead tracking around turns
+ * Improve cut-in prediction by using neural network
+ * Improve lateral control on Toyota Camry and C-HR thanks to zorrobyte!
+ * Fix unintended openpilot disengagements on Jeep thanks to adhintz!
+ * Fix delayed transition to offroad when car is turned off
+
+Version 0.6.1 (2019-07-21)
+========================
+ * Remote SSH with comma prime and [ssh.comma.ai](https://ssh.comma.ai)
+ * Panda code Misra-c2012 compliance, tested against cppcheck coverage
+ * Lockout openpilot after 3 terminal alerts for driver distracted or unresponsive
+ * Toyota Sienna support thanks to wocsor!
+
 Version 0.6 (2019-07-01)
 ========================
  * New model, with double the pixels and ten times the temporal context!
@@ -8,7 +75,7 @@ Version 0.6 (2019-07-01)
  * Panda safety code is MISRA compliant and ships with a signed version on release2
  * New NEOS is 500MB smaller and has a reproducible usr/pipenv
  * Lexus ES Hybrid support thanks to wocsor!
- * Improve tuning for supported Toyota with TSS2
+ * Improve tuning for supported Toyota with TSS 2.0
  * Various other stability improvements
 
 Version 0.5.13 (2019-05-31)
